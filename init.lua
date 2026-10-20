@@ -1,135 +1,204 @@
-local modpath = minetest.get_modpath("your_skin_v2")
-local texture_path = modpath .. "/textures"
-local files = minetest.get_dir_list(texture_path, false) or {}
+-- =========================================================================
+-- YourSkinMod - init.lua (With ui.lua Integration & Live Preview)
+-- =========================================================================
 
-local skins = {}
-for _, file in ipairs(files) do
-    if file:sub(-4):lower() == ".png" then
-        table.insert(skins, file)
-    end
-end
-table.sort(skins)
+local modpath = minetest.get_modpath(minetest.get_current_modname())
 
-if #skins == 0 then
-    skins = {"character.png"}
-end
+-- 1. Include the original ui.lua
+local ui = dofile(modpath .. "/ui.lua")
 
-local player_skin_idx = {}
-local player_skin_rot = {}
+-- 2. Load animation.json for animated skins
+local json_path = modpath .. "/animation.json"
+local json_file = io.open(json_path, "r")
+local skin_animations = {}
 
--- Fester Speicherplatz im Welt-Ordner (mod_storage/your_skin_v2)
-local storage = minetest.get_mod_storage()
-
-local function build_formspec(player_name)
-    local idx = player_skin_idx[player_name] or 1
-    local current_skin = skins[idx] or skins[1]
-
-    -- "false;true" aktiviert die automatische Drehung um die Y-Achse
-    local formspec = "size[8,9]" ..
-        "label[2.8,0.3;=== Skin Galerie (" .. idx .. "/" .. #skins .. ") ===]" ..
-        "button[7.1,0.2;0.7,0.7;go_home;X]" ..
-        "model[2,0.8;4,4.5;skin_preview;character.b3d;" .. current_skin .. ";0,0;false;true;0,0]" ..
-        "button[1,6.5;2,0.8;prev_skin;<- Vorheriger]" ..
-        "button[5,6.5;2,0.8;next_skin;Nächster ->]" ..
-        "button[2.5,7.5;3,0.8;apply_skin;Skin Auswählen]"
-
-    return formspec
+if json_file then
+    local content = json_file:read("*a")
+    json_file:close()
+    skin_animations = minetest.parse_json(content) or {}
+    minetest.log("action", "[YourSkinMod] animation.json loaded successfully.")
+else
+    minetest.log("warning", "[YourSkinMod] Could not load animation.json.")
 end
 
-local function render_page(context, content)
-    if sfinv and sfinv.make_page then
-        return sfinv.make_page(context, content)
-    end
-    return content
-end
+-- 3. Combine skins: static skins + animated skins from JSON
+local skins = {
+    { name = "Luanti", is_animated = false, texture = "luanti.png" },
+    { name = "Goose", is_animated = false, texture = "goose.png" },
+    { name = "Normal Skin", is_animated = false, texture = "normal-skin.png" }
+}
 
-local function apply_player_skin(player, skin_name)
-    if not player or not skin_name then return end
-    player:set_properties({
-        textures = {skin_name}
+-- Add animated skins from JSON
+for skin_name, anim_data in pairs(skin_animations) do
+    table.insert(skins, {
+        name = skin_name,
+        is_animated = true,
+        fps = anim_data.fps or 2,
+        on_finish = anim_data.on_finish or 1,
+        frames = anim_data.frames or {}
     })
 end
 
+-- Player states
+local player_skin_idx = {}    -- Which skin is currently selected in the menu
+local player_skin_rot = {}    -- Rotation angle of the preview
+local player_active_skin = {} -- The skin currently equipped in-game
+local formspec_open = {}      -- Stores whether the menu is open
+
+-- Helper function: Determine the correct texture for a skin and frame
+local function get_skin_texture(skin, frame_idx)
+    if not skin then return "character.png" end
+    if not skin.is_animated then
+        return skin.texture
+    else
+        local frames = skin.frames
+        if frames and #frames > 0 then
+            local idx = ((frame_idx - 1) % #frames) + 1
+            return frames[idx].file
+        end
+        return "character.png"
+    end
+end
+
+-- Helper function: Open / update the menu
+local function show_skin_menu(player_name)
+    local p_idx = player_skin_idx[player_name] or 1
+    if p_idx > #skins then p_idx = 1; player_skin_idx[player_name] = p_idx end
+    
+    local skin = skins[p_idx]
+    local active_state = player_active_skin[player_name]
+    local frame_idx = 1
+    if active_state and active_state.skin_name == skin.name then
+        frame_idx = active_state.frame_index or 1
+    end
+    
+    -- Get the current texture (including animation frame for the preview)
+    local current_texture = get_skin_texture(skin, frame_idx)
+    
+    -- Use ui.lua to build the formspec
+    local fs = ui.build_formspec(player_name, skins, player_skin_idx, player_skin_rot, current_texture)
+    minetest.show_formspec(player_name, "your_skin:menu", fs)
+    formspec_open[player_name] = true
+end
+
+-- 4. Globalstep: Runs in the background for player animation and live preview
+minetest.register_globalstep(function(dtime)
+    for _, player in ipairs(minetest.get_connected_players()) do
+        local name = player:get_player_name()
+        
+        -- Update the equipped skin's animation in-game
+        local active = player_active_skin[name]
+        if active and active.is_animated then
+            active.timer = (active.timer or 0) + dtime
+            local skin_data = active.skin_data
+            local current_frame_data = skin_data.frames[active.frame_index]
+            local duration = current_frame_data and current_frame_data.duration or (1.0 / (skin_data.fps or 2))
+            
+            if active.timer >= duration then
+                active.timer = 0
+                active.frame_index = active.frame_index + 1
+                if active.frame_index > #skin_data.frames then
+                    active.frame_index = skin_data.on_finish or 1
+                end
+                local tex = skin_data.frames[active.frame_index].file
+                player:set_properties({ textures = { tex } })
+            end
+        end
+        
+        -- If the menu is open, update it so the preview animates smoothly
+        if formspec_open[name] then
+            show_skin_menu(name)
+        end
+    end
+end)
+
+-- 5. Handle button clicks and menu controls
+minetest.register_on_player_receive_fields(function(player, formname, fields)
+    if formname ~= "your_skin:menu" then return end
+    local name = player:get_player_name()
+    
+    player_skin_idx[name] = player_skin_idx[name] or 1
+    player_skin_rot[name] = player_skin_rot[name] or 0
+    
+    -- "X" button or close
+    if fields.go_home or fields.quit then
+        formspec_open[name] = false
+        minetest.close_formspec(name, "your_skin:menu")
+        return
+    end
+    
+    -- <- Previous Skin
+    if fields.prev_skin then
+        player_skin_idx[name] = player_skin_idx[name] - 1
+        if player_skin_idx[name] < 1 then
+            player_skin_idx[name] = #skins
+        end
+        show_skin_menu(name)
+        return
+    end
+    
+    -- Next -> Skin
+    if fields.next_skin then
+        player_skin_idx[name] = player_skin_idx[name] + 1
+        if player_skin_idx[name] > #skins then
+            player_skin_idx[name] = 1
+        end
+        show_skin_menu(name)
+        return
+    end
+    
+    -- Select Skin (Auswählen)
+    if fields.apply_skin then
+        local idx = player_skin_idx[name]
+        local skin = skins[idx]
+        
+        if skin.is_animated then
+            player_active_skin[name] = {
+                is_animated = true,
+                skin_name = skin.name,
+                skin_data = skin,
+                frame_index = 1,
+                timer = 0
+            }
+            local tex = skin.frames[1].file
+            player:set_properties({ textures = { tex } })
+            minetest.chat_send_player(name, "Animated skin selected: " .. skin.name)
+        else
+            player_active_skin[name] = { is_animated = false }
+            player:set_properties({ textures = { skin.texture } })
+            minetest.chat_send_player(name, "Skin selected: " .. skin.name)
+        end
+        formspec_open[name] = false
+        minetest.close_formspec(name, "your_skin:menu")
+        return
+    end
+end)
+
+minetest.register_on_leaveplayer(function(player)
+    local name = player:get_player_name()
+    player_skin_idx[name] = nil
+    player_skin_rot[name] = nil
+    player_active_skin[name] = nil
+    formspec_open[name] = nil
+end)
+
+-- 6. Sfinv integration (adds the "Skins" tab to the inventory)
 if minetest.get_modpath("sfinv") then
-    sfinv.register_page("your_skin_v2:viewer", {
+    sfinv.register_page("your_skin:skin_page", {
         title = "Skins",
         get = function(self, player, context)
             local name = player:get_player_name()
-            return render_page(context, build_formspec(name))
+            local p_idx = player_skin_idx[name] or 1
+            local skin = skins[p_idx] or skins[1]
+            local active_state = player_active_skin[name]
+            local frame_idx = (active_state and active_state.skin_name == skin.name) and (active_state.frame_index or 1) or 1
+            local current_texture = get_skin_texture(skin, frame_idx)
+            
+            formspec_open[name] = true
+            return ui.build_formspec(name, skins, player_skin_idx, player_skin_rot, current_texture)
         end,
         on_player_receive_fields = function(self, player, context, fields)
-            if fields.quit then
-                return
-            end
-
-            local name = player:get_player_name()
-
-            -- X-Button gedrückt: Wechselt zurück zum Hauptinventar
-            if fields.go_home then
-                local home_page = sfinv.get_homepage_name and sfinv.get_homepage_name(player) or "sfinv:crafting"
-                sfinv.set_page(player, home_page)
-                return
-            end
-
-            local idx = player_skin_idx[name] or 1
-            local rot = player_skin_rot[name] or 0
-            local updated = false
-
-            if fields.next_skin then
-                idx = (idx % #skins) + 1
-                updated = true
-            elseif fields.prev_skin then
-                idx = idx - 1
-                if idx < 1 then idx = #skins end
-                updated = true
-            elseif fields.rot_left then
-                rot = (rot - 45) % 360
-                updated = true
-            elseif fields.rot_right then
-                rot = (rot + 45) % 360
-                updated = true
-            elseif fields.apply_skin then
-                local chosen_skin = skins[idx]
-                apply_player_skin(player, chosen_skin)
-                
-                -- Speichert "Spielername = Skin.png" im mod_storage
-                storage:set_string(name, chosen_skin)
-
-                minetest.chat_send_player(name, "[Your Skin] Skin gewechselt zu: " .. chosen_skin)
-                return
-            end
-
-            if updated then
-                player_skin_idx[name] = idx
-                player_skin_rot[name] = rot
-                sfinv.set_player_inventory_formspec(player, context)
-            end
+            -- Handled by the global handler
         end,
     })
 end
-
--- Beim Betreten der Welt den gespeicherten Skin nach 0.2 Sekunden setzen
-minetest.register_on_joinplayer(function(player)
-    local name = player:get_player_name()
-    local saved_skin = storage:get_string(name)
-
-    if saved_skin and saved_skin ~= "" then
-        minetest.after(0.2, function()
-            local p = minetest.get_player_by_name(name)
-            if p then
-                apply_player_skin(p, saved_skin)
-            end
-        end)
-
-        for i, s in ipairs(skins) do
-            if s == saved_skin then
-                player_skin_idx[name] = i
-                break
-            end
-        end
-    else
-        player_skin_idx[name] = 1
-    end
-
-    player_skin_rot[name] = 0
-end)
