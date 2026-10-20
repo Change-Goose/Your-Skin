@@ -1,0 +1,16 @@
+{
+  "Animated Skin": {
+    "fps": 2,
+    "on_finish": 1,
+    "frames": [
+      { "file": "Animated_skin_1.png", "duration": 0.5 },
+      { "file": "Animated_skin_2.png", "duration": 0.5 },
+      { "file": "Animated_skin_3.png", "duration": 0.5 },
+      { "file": "Animated_skin_4.png", "duration": 0.5 },
+      { "file": "Animated_skin_5.png", "duration": 0.5 },
+      { "file": "Animated_skin_6.png", "duration": 0.5 },
+      { "file": "Animated_skin_7.png", "duration": 0.5 },
+      { "file": "Animated_skin_8.png", "duration": 0.5 }
+    ]
+  }
+}
